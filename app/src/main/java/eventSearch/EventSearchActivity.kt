@@ -69,7 +69,6 @@ class EventSearchActivity : AppCompatActivity(), EventSearchRecyclerAdapter.OnIt
         recyclerView.layoutManager = linearLayoutManager
 
         recyclerView.isNestedScrollingEnabled = false
-
     }
 
     private fun setButtons() {

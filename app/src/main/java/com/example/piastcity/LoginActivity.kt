@@ -1,8 +1,4 @@
 package com.example.piastcity
-// login screen
-// login with credentials todo
-// nazwa uzytkownika
-// zeby nazwy uzytkownika sie nie duplikowaly
 
 import User.UserCreate
 import android.content.Intent

@@ -85,15 +85,8 @@ class UserCreate : ComponentActivity() {
                 .addOnFailureListener {
                     Toast.makeText(this, "Błąd wysyłania zdjęcia: ${it.message}", Toast.LENGTH_LONG).show()
                 }
-        } else {
-            // Jeśli nie ma zdjęcia, zapisz profil bez imageUrl
-            val user = User(
-                username = username,
-                firebaseUser = currentUserEmail,
-                imageUrl = null
-            )
-            sendUserToFirestore(user)
         }
+
     }
 
     private fun sendUserToFirestore(user: User) {
@@ -229,17 +222,20 @@ private fun UserCreateScreen(
 
             Button(
                 onClick = {
-                    if (username.isNotBlank()) {
+                    // Sprawdzamy oba warunki przed zapisem
+                    if (username.isNotBlank() && imageUri != null) {
                         onSaveProfile(username, imageUri)
                     } else {
-                        Toast.makeText(context, "Nazwa użytkownika jest wymagana.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Nazwa użytkownika i zdjęcie są wymagane.", Toast.LENGTH_SHORT).show()
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = username.isNotBlank() // Przycisk jest aktywny tylko, gdy nazwa jest wpisana
+                // ZMIANA: Przycisk aktywny tylko, gdy oba pola są uzupełnione
+                enabled = username.isNotBlank() && imageUri != null
             ) {
                 Text("Zapisz profil")
             }
+
         }
     }
 }

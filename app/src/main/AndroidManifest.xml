@@ -55,13 +55,6 @@
         <activity
             android:name="eventCreation.EventCreator"
             android:exported="true" />
-
-        <activity
-            android:name=".UI"
-            android:exported="true" />
-        <activity
-            android:name=".AppActivity"
-            android:exported="false" />
         <activity
             android:name=".RegisterActivity"
             android:exported="false" />

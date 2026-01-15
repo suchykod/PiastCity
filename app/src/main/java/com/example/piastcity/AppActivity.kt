@@ -1,11 +1,11 @@
-package com.example.piastcity
-// klasa dla aplikacji
-import android.os.Bundle
-import androidx.appcompat.app.AppCompatActivity
-
-class AppActivity : AppCompatActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_app)
-    }
-}
+//package com.example.piastcity
+//// klasa dla aplikacji
+//import android.os.Bundle
+//import androidx.appcompat.app.AppCompatActivity
+//
+//class AppActivity : AppCompatActivity() {
+//    override fun onCreate(savedInstanceState: Bundle?) {
+//        super.onCreate(savedInstanceState)
+//        setContentView(R.layout.activity_app)
+//    }
+//}

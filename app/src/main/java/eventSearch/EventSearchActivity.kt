@@ -1,26 +1,34 @@
 package eventSearch
 
 import User.User
-import android.content.Context // NOWOŚĆ: Potrzebne do Geocoder
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.DatePickerDialog
+import android.content.Context
 import android.content.Intent
-import android.location.Geocoder // NOWOŚĆ: Potrzebne do Geocoder
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow // NOWOŚĆ: Do wyświetlania tagów
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
@@ -34,16 +42,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow // NOWOŚĆ: Do przycinania opisu
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope // NOWOŚĆ: Do korutyn
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.piastcity.R
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ktx.firestore
@@ -51,12 +63,27 @@ import com.google.firebase.firestore.ktx.toObject
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.storage.FirebaseStorage
 import event.Event
-import kotlinx.coroutines.Dispatchers // NOWOŚĆ: Do operacji w tle
-import kotlinx.coroutines.launch // NOWOŚĆ: Do korutyn
-import java.io.IOException // NOWOŚĆ: Do obsługi błędów Geocoder
-import java.util.* // NOWOŚĆ: Potrzebne do Geocoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.*
 
-// --- KROK 1: ViewModel do zarządzania logiką i danymi ---
+// --- Modele Danych dla UI ---
+
+enum class FilterType { NONE, USERNAME, TAG, DATE }
+enum class SortType { CREATION_DATE, START_DATE, DISTANCE, NAME }
+
+data class EventOptions(
+    val filterType: FilterType = FilterType.NONE,
+    val filterValue: Any? = null,
+    val sortType: SortType = SortType.CREATION_DATE,
+    val userLocation: Location? = null
+)
+
+// --- ViewModel ---
+
 class EventSearchViewModel : ViewModel() {
     private val firestore = Firebase.firestore
     private val storage = FirebaseStorage.getInstance()
@@ -68,272 +95,343 @@ class EventSearchViewModel : ViewModel() {
     private val _users = MutableLiveData<Map<String, User>>()
     val users: LiveData<Map<String, User>> = _users
 
-    // NOWOŚĆ: LiveData do przechowywania adresów (klucz to ID eventu)
     private val _addresses = MutableLiveData<Map<String, String>>()
     val addresses: LiveData<Map<String, String>> = _addresses
 
-    private val collectionPath = "events2"
+    private val _isSearching = MutableLiveData(false)
+    val isSearching: LiveData<Boolean> = _isSearching
 
-    init {
-        fetchEvents()
+    private val _options = MutableLiveData(EventOptions())
+    val options: LiveData<EventOptions> = _options
+
+    fun updateFilter(type: FilterType, value: Any?) { _options.value = EventOptions(filterType = type, filterValue = value, sortType = _options.value?.sortType ?: SortType.CREATION_DATE, userLocation = _options.value?.userLocation) }
+    fun updateSort(type: SortType) { _options.value = _options.value?.copy(sortType = type) }
+    fun updateUserLocation(location: Location) { _options.value = _options.value?.copy(userLocation = location) }
+    fun clearOptions() { _options.value = EventOptions(userLocation = _options.value?.userLocation) }
+
+    fun fetchEvents() {
+        viewModelScope.launch {
+            _isSearching.value = true
+            val currentOptions = _options.value ?: EventOptions()
+            var query: Query = firestore.collection("events2")
+
+            // --- Logika Filtrowania (tylko jedno kryterium na raz) ---
+            when (currentOptions.filterType) {
+                FilterType.TAG -> {
+                    val tag = currentOptions.filterValue as? String
+                    if (!tag.isNullOrBlank()) query = query.whereArrayContains("tags", tag)
+                }
+                FilterType.DATE -> {
+                    val date = currentOptions.filterValue as? Date
+                    if (date != null) {
+                        val calStart = Calendar.getInstance().apply { time = date; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0) }
+                        val calEnd = Calendar.getInstance().apply { time = date; set(Calendar.HOUR_OF_DAY, 23); set(Calendar.MINUTE, 59) }
+                        query = query.whereGreaterThanOrEqualTo("startDate", calStart.time).whereLessThanOrEqualTo("startDate", calEnd.time)
+                    }
+                }
+                FilterType.USERNAME -> {
+                    val username = currentOptions.filterValue as? String
+                    if (!username.isNullOrBlank()) {
+                        val userQuery = firestore.collection("users").whereEqualTo("username", username).limit(1).get().await()
+                        if (!userQuery.isEmpty) {
+                            // ZMIANA: Pobierz pierwszy dokument z listy
+                            val ownerEmail = userQuery.documents[0].getString("firebaseUser")
+                            query = query.whereEqualTo("owner", ownerEmail)
+                        } else {
+                            _events.postValue(emptyList())
+                            _isSearching.postValue(false)
+                            return@launch
+                        }
+                    }
+                }
+                FilterType.NONE -> { /* Brak filtrowania */ }
+            }
+
+            // --- Logika Sortowania (w zapytaniu) ---
+            when (currentOptions.sortType) {
+                SortType.CREATION_DATE -> query = query.orderBy("creation", Query.Direction.DESCENDING)
+                SortType.START_DATE -> query = query.orderBy("startDate", Query.Direction.ASCENDING)
+                SortType.NAME -> query = query.orderBy("name", Query.Direction.ASCENDING)
+                SortType.DISTANCE -> { /* Sortowanie po dystansie robimy po stronie klienta */ }
+            }
+
+            try {
+                // ZMIANA: Wracamy do prostego toObjects, bo klasy są już nullable
+                var eventList = query.get().await().toObjects(Event::class.java)
+
+                // --- Sortowanie po stronie klienta (tylko dla odległości) ---
+                if (currentOptions.sortType == SortType.DISTANCE && currentOptions.userLocation != null) {
+                    eventList.sortWith(compareBy { event ->
+                        // ZMIANA: Musimy znowu sprawdzać nulle!
+                        if (event.latitude != null && event.longitude != null) {
+                            val eventLocation = Location("").apply {
+                                latitude = event.latitude
+                                longitude = event.longitude
+                            }
+                            currentOptions.userLocation.distanceTo(eventLocation)
+                        } else {
+                            Float.MAX_VALUE // Wydarzenia bez lokalizacji na koniec
+                        }
+                    })
+                }
+
+                _events.postValue(eventList)
+                if (eventList.isNotEmpty()) {
+                    fetchUsersForEvents(eventList)
+                } else {
+                    _users.postValue(emptyMap())
+                }
+            } catch (e: Exception) {
+                _events.postValue(emptyList())
+            } finally {
+                _isSearching.postValue(false)
+            }
+        }
     }
 
-    // NOWOŚĆ: Funkcja do zamiany współrzędnych na adres (odwrócone geokodowanie)
+    private fun fetchUsersForEvents(events: List<Event>) = viewModelScope.launch {
+        val ownerEmails = events.mapNotNull { it.owner }.distinct()
+        if (ownerEmails.isNotEmpty()) {
+            val userSnapshot = firestore.collection("users").whereIn("firebaseUser", ownerEmails).get().await()
+            // ZMIANA: Wracamy do prostego toObject, bo User ma już pusty konstruktor
+            val usersMap = userSnapshot.documents.mapNotNull { it.toObject<User>() }
+                .filter { it.firebaseUser != null }
+                .associateBy { it.firebaseUser!! }
+            _users.postValue(usersMap)
+        }
+    }
+
     fun getAddressFromCoordinates(context: Context, event: Event) {
-        // Sprawdzamy, czy event ma koordynaty i czy nie mamy już dla niego adresu
-        if (event.latitude != null && event.longitude != null && _addresses.value?.containsKey(event.creation.toString()) != true) {
-            viewModelScope.launch(Dispatchers.IO) { // Operacja sieciowa w tle
+        // ZMIANA: Musimy sprawdzać nulle!
+        if (event.latitude != null && event.longitude != null && event.id != null && _addresses.value?.containsKey(event.id) != true) {
+            viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val geocoder = Geocoder(context, Locale.getDefault())
                     val addressList = geocoder.getFromLocation(event.latitude, event.longitude, 1)
                     if (addressList?.isNotEmpty() == true) {
-                        val address = addressList[0]
-                        val addressText = address.getAddressLine(0) // Pobieramy pierwszą linię adresu
-                        // Aktualizujemy LiveData w głównym wątku
                         launch(Dispatchers.Main) {
                             val currentAddresses = _addresses.value?.toMutableMap() ?: mutableMapOf()
-                            currentAddresses[event.creation.toString()] = addressText
+                            currentAddresses[event.id!!] = addressList[0].getAddressLine(0)
                             _addresses.value = currentAddresses
                         }
                     }
-                } catch (e: IOException) {
-                    // Obsługa błędu (np. brak sieci)
-                }
+                } catch (e: IOException) { /* Ignorujemy błąd */ }
             }
         }
-    }
-
-
-    fun fetchEvents() {
-        firestore.collection(collectionPath)
-            .orderBy("creation", Query.Direction.DESCENDING)
-            .get()
-            .addOnSuccessListener { snapshot ->
-                val eventList = snapshot.documents.mapNotNull { it.toObject<Event>() }
-                _events.value = eventList
-                fetchUsersForEvents(eventList)
-            }
-            .addOnFailureListener {
-                _events.value = emptyList()
-            }
-    }
-
-    private fun fetchUsersForEvents(events: List<Event>) {
-        val ownerEmails = events.map { it.owner }.distinct().filterNotNull()
-        if (ownerEmails.isEmpty()) return
-
-        firestore.collection("users")
-            .whereIn("firebaseUser", ownerEmails)
-            .get()
-            .addOnSuccessListener { userSnapshot ->
-                val userMap = userSnapshot.documents.mapNotNull { it.toObject<User>() }
-                    .associateBy { it.firebaseUser!! }
-                _users.value = userMap
-            }
     }
 
     fun deleteEvent(event: Event, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        if (event.owner != currentUserEmail) {
-            onFailure("Możesz usuwać tylko własne wydarzenia.")
-            return
-        }
+        // ZMIANA: Musimy sprawdzać nulle!
+        if (event.owner != currentUserEmail) { onFailure("Możesz usuwać tylko własne wydarzenia."); return }
+        if (event.id == null) { onFailure("Błąd: Brak ID wydarzenia."); return }
 
-        firestore.collection(collectionPath)
-            .whereEqualTo("creation", event.creation)
-            .whereEqualTo("owner", event.owner)
-            .get()
-            .addOnSuccessListener { documents ->
-                if (documents.isEmpty) {
-                    onFailure("Nie znaleziono wydarzenia do usunięcia.")
-                } else {
-                    val docId = documents.documents[0].id
-                    firestore.collection(collectionPath).document(docId).delete()
-                        .addOnSuccessListener {
-                            event.imageUrl?.let { url ->
-                                storage.getReferenceFromUrl(url).delete()
-                            }
-                            onSuccess()
-                            fetchEvents()
-                        }
-                        .addOnFailureListener { e ->
-                            onFailure("Błąd usuwania: ${e.message}")
-                        }
-                }
+        firestore.collection("events2").document(event.id).delete()
+            .addOnSuccessListener {
+                event.imageUrl?.let { url -> storage.getReferenceFromUrl(url).delete() }
+                onSuccess()
+                fetchEvents()
             }
-            .addOnFailureListener { e ->
-                onFailure("Błąd wyszukiwania: ${e.message}")
-            }
+            .addOnFailureListener { e -> onFailure("Błąd usuwania: ${e.message}") }
     }
 }
 
+// --- Główna Aktywność i Ekran ---
 
 class EventSearchActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            EventSearchScreen()
+            ui.PiastCityTheme {
+                EventSearchScreen()
+            }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EventSearchScreen(viewModel: EventSearchViewModel = viewModel()) {
     val context = LocalContext.current
     val events by viewModel.events.observeAsState(initial = emptyList())
     val users by viewModel.users.observeAsState(initial = emptyMap())
-    val addresses by viewModel.addresses.observeAsState(initial = emptyMap()) // NOWOŚĆ: Obserwujemy adresy
+    val addresses by viewModel.addresses.observeAsState(initial = emptyMap())
+    val isSearching by viewModel.isSearching.observeAsState(false)
+    val options by viewModel.options.observeAsState(EventOptions())
+
     var showDeleteDialog by remember { mutableStateOf(false) }
     var eventToDelete by remember { mutableStateOf<Event?>(null) }
 
+    val sheetState = rememberModalBottomSheetState()
+    var showBottomSheet by remember { mutableStateOf(false) }
+
+    @SuppressLint("MissingPermission")
+    fun fetchLastLocation(
+        fusedLocationClient: FusedLocationProviderClient,
+        onLocationFetched: (Location) -> Unit
+    ) {
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            location?.let(onLocationFetched)
+        }
+    }
+
+
+    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    var hasLocationPermission by remember { mutableStateOf(hasLocationPermission(context)) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        hasLocationPermission = permissions.values.all { it }
+        if (hasLocationPermission) {
+            // Call the new, safe function
+            fetchLastLocation(fusedLocationClient) { location ->
+                viewModel.updateUserLocation(location)
+            }
+        }
+    }
+
+
+
+    LaunchedEffect(hasLocationPermission) {
+        if (hasLocationPermission) {
+            // Call the new, safe function
+            fetchLastLocation(fusedLocationClient) { location ->
+                viewModel.updateUserLocation(location)
+            }
+        } else {
+            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+
+    // Pobierz eventy przy pierwszym uruchomieniu
+    LaunchedEffect(Unit) {
+        viewModel.fetchEvents()
+    }
+
     Scaffold(
-        containerColor = Color(0xFF131313),
+        topBar = {
+            TopAppBar(
+                title = { Text("Wydarzenia") },
+                actions = {
+                    IconButton(onClick = { viewModel.clearOptions(); viewModel.fetchEvents() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Odśwież i wyczyść filtry")
+                    }
+                    IconButton(onClick = { showBottomSheet = true }) {
+                        Icon(Icons.Default.Tune, contentDescription = "Filtruj i Sortuj")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                FloatingActionButton(onClick = { viewModel.fetchEvents() }) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Odśwież")
-                }
-                FloatingActionButton(onClick = {
-                    val intent = Intent(context, eventCreation.EventCreator::class.java)
-                    context.startActivity(intent)
-                }) {
-                    Icon(Icons.Default.Add, contentDescription = "Dodaj wydarzenie")
-                }
+            FloatingActionButton(onClick = { context.startActivity(Intent(context, eventCreation.EventCreator::class.java)) }) {
+                Icon(Icons.Default.Add, contentDescription = "Dodaj wydarzenie")
             }
         }
     ) { paddingValues ->
-        if (events.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Brak wydarzeń. Dodaj pierwsze!", color = Color.White, fontSize = 20.sp)
+
+        if (isSearching) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else if (events.isEmpty()) {
+            Box(modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp), contentAlignment = Alignment.Center) {
+                Text("Brak wydarzeń. Zmień kryteria wyszukiwania lub dodaj nowe wydarzenie.", color = Color.Gray, fontSize = 20.sp, textAlign = TextAlign.Center)
             }
         } else {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(events, key = { it.creation.toString() + it.owner }) { event ->
+                items(events, key = { it.id!! }) { event ->
                     val user = users[event.owner]
-                    val address = addresses[event.creation.toString()] // NOWOŚĆ: Pobieramy adres dla eventu
+                    val address = event.id?.let { addresses[it] }
 
-                    // NOWOŚĆ: Uruchamiamy pobieranie adresu, jeśli go nie ma
-                    LaunchedEffect(key1 = event) {
-                        viewModel.getAddressFromCoordinates(context, event)
-                    }
+                    LaunchedEffect(event.id) { viewModel.getAddressFromCoordinates(context, event) }
 
                     EventCard(
-                        event = event,                        user = user,
-                        address = address, // NOWOŚĆ: Przekazujemy adres do karty
-                        // ... wewnątrz EventSearchScreen
+                        event = event,
+                        user = user,
+                        address = address,
+                        currentUserLocation = options.userLocation,
                         onItemClick = { clickedEvent ->
-                            // Przekazujemy TYLKO ID wydarzenia
-                            val intent = Intent(context, EventDetailActivity::class.java).apply {
-                                putExtra("EVENT_ID", clickedEvent.id)
-                            }
+                            val intent = Intent(context, EventDetailActivity::class.java).apply { putExtra("EVENT_ID", clickedEvent.id) }
                             context.startActivity(intent)
                         },
-                        onItemLongClick = {
-                            // ZMIANA: Pokaż dialog zamiast usuwać od razu
-                            eventToDelete = it
-                            showDeleteDialog = true
-                        }
+                        onItemLongClick = { eventToDelete = it; showDeleteDialog = true }
                     )
                 }
             }
         }
-        // NOWOŚĆ: Dialog potwierdzający usunięcie
-        if (showDeleteDialog && eventToDelete != null) {
+
+        if (showBottomSheet) {
+            ModalBottomSheet(onDismissRequest = { showBottomSheet = false }, sheetState = sheetState) {
+                OptionsPanel(
+                    options = options,
+                    onFilterChanged = { type, value -> viewModel.updateFilter(type, value) },
+                    onSortChanged = { type -> viewModel.updateSort(type) },
+                    onSearchClick = { showBottomSheet = false; viewModel.fetchEvents() }
+                )
+            }
+        }
+
+        if (showDeleteDialog) {
             AlertDialog(
-                onDismissRequest = {
-                    showDeleteDialog = false
-                    eventToDelete = null
-                },
+                onDismissRequest = { showDeleteDialog = false },
                 title = { Text("Potwierdź usunięcie") },
                 text = { Text("Czy na pewno chcesz trwale usunąć wydarzenie '${eventToDelete?.name}'?") },
                 confirmButton = {
-                    Button(
-                        onClick = {
-                            eventToDelete?.let {
-                                viewModel.deleteEvent(
-                                    event = it,
-                                    onSuccess = { Toast.makeText(context, "Wydarzenie usunięte", Toast.LENGTH_SHORT).show() },
-                                    onFailure = { errorMsg -> Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show() }
-                                )
-                            }
-                            showDeleteDialog = false
-                            eventToDelete = null
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Text("Usuń")
-                    }
-                },
-                dismissButton = {
                     Button(onClick = {
+                        eventToDelete?.let { viewModel.deleteEvent(it,
+                            { Toast.makeText(context, "Wydarzenie usunięte", Toast.LENGTH_SHORT).show() },
+                            { err -> Toast.makeText(context, err, Toast.LENGTH_LONG).show() }) }
                         showDeleteDialog = false
-                        eventToDelete = null
-                    }) {
-                        Text("Anuluj")
-                    }
-                }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Usuń") }
+                },
+                dismissButton = { Button(onClick = { showDeleteDialog = false }) { Text("Anuluj") } }
             )
         }
     }
 }
 
+// --- Komponenty UI ---
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun EventCard(
-    event: Event,
-    user: User?,
-    address: String?, // NOWOŚĆ: Przyjmujemy adres
-    onItemClick: (Event) -> Unit,
-    onItemLongClick: (Event) -> Unit
-) {
+fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: Location?, onItemClick: (Event) -> Unit, onItemLongClick: (Event) -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = { onItemClick(event) },
-                onLongClick = { onItemLongClick(event) }
-            ),
-        shape = RoundedCornerShape(25.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Black)
+                onLongClick = { onItemLongClick(event) }),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 AsyncImage(
                     model = user?.imageUrl,
                     contentDescription = "Avatar",
                     placeholder = painterResource(id = R.drawable.login_bck),
                     modifier = Modifier
-                        .size(62.dp)
+                        .size(52.dp)
                         .clip(CircleShape)
                         .border(1.dp, Color.White, CircleShape),
                     contentScale = ContentScale.Crop
                 )
-                Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(user?.username ?: "Nieznany użytkownik", fontWeight = FontWeight.Bold, color = Color.White)
-                    // ZMIANA: Wyświetlamy adres jeśli jest, w przeciwnym razie stary tekst
-                    if (event.latitude != null) {
-                        Text(
-                            text = address ?: "Pobieranie adresu...",
-                            color = Color.Gray,
-                            fontSize = 12.sp,
-                            modifier = Modifier.clickable { onItemClick(event) }
-                        )
-                    } else {
-                        Text("Brak lokalizacji", color = Color.Gray, fontSize = 12.sp)
-                    }
+                    Text(user?.username ?: "...", fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(address ?: "...", color = Color.LightGray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                // ZMIANA: Sprawdzamy nulle
+                if (currentUserLocation != null && event.latitude != null && event.longitude != null) {
+                    val eventLocation = Location("").apply { latitude = event.latitude; longitude = event.longitude }
+                    val distanceInKm = currentUserLocation.distanceTo(eventLocation) / 1000
+                    Text(String.format(Locale.US, "%.1f km", distanceInKm), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
 
@@ -342,36 +440,26 @@ fun EventCard(
                 contentDescription = event.name,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(450.dp),
+                    .height(350.dp),
                 contentScale = ContentScale.Crop,
                 placeholder = painterResource(id = R.drawable.login_bck)
             )
 
-            // ZMIANA: Całkowicie nowa stopka karty
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(event.name ?: "Brak nazwy", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-
-                // NOWOŚĆ: Wyświetlanie opisu, jeśli istnieje
                 if (!event.description.isNullOrBlank()) {
-                    Text(
-                        text = event.description,
-                        fontSize = 14.sp,
-                        color = Color.LightGray,
-                        maxLines = 2, // Ograniczamy do 2 linii
-                        overflow = TextOverflow.Ellipsis // Dodajemy "..." na końcu
-                    )
+                    Text(event.description, fontSize = 14.sp, color = Color.LightGray, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-
-                // NOWOŚĆ: Wyświetlanie tagów, jeśli istnieją
                 if (!event.tags.isNullOrEmpty()) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(event.tags.take(10)) { tag -> // Ograniczamy do max 10 tagów
+                        items(event.tags.take(10)) { tag ->
+                            // ZMIANA: Dodaj kolory do chipa
                             SuggestionChip(
-                                onClick = { /* Kliknięcie na tag - można dodać filtrowanie */ },
+                                onClick = { /* ... */ },
                                 label = { Text(tag) },
                                 colors = SuggestionChipDefaults.suggestionChipColors(
-                                    containerColor = Color.DarkGray,
-                                    labelColor = Color.White
+                                    containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                                    labelColor = MaterialTheme.colorScheme.onSurface
                                 )
                             )
                         }
@@ -380,4 +468,84 @@ fun EventCard(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OptionsPanel(options: EventOptions, onFilterChanged: (FilterType, Any?) -> Unit, onSortChanged: (SortType) -> Unit, onSearchClick: () -> Unit) {
+    val context = LocalContext.current
+    var usernameFilter by remember { mutableStateOf((options.filterValue as? String)?.takeIf { options.filterType == FilterType.USERNAME } ?: "") }
+    var tagFilter by remember { mutableStateOf((options.filterValue as? String)?.takeIf { options.filterType == FilterType.TAG } ?: "") }
+    val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()) }
+
+    Column(modifier = Modifier
+        .padding(16.dp)
+        .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Filtruj i Sortuj", style = MaterialTheme.typography.titleLarge, modifier = Modifier.align(Alignment.CenterHorizontally))
+
+        Text("Filtruj (tylko jedno pole aktywne)", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = usernameFilter,
+            onValueChange = { usernameFilter = it; onFilterChanged(FilterType.USERNAME, it) },
+            label = { Text("Nazwa użytkownika") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = tagFilter,
+            onValueChange = { tagFilter = it; onFilterChanged(FilterType.TAG, it) },
+            label = { Text("Tag") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = (options.filterValue as? Date)?.takeIf { options.filterType == FilterType.DATE }?.let { dateFormat.format(it) } ?: "",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Data wydarzenia") },
+            trailingIcon = { Icon(Icons.Default.DateRange, "Wybierz datę") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val calendar = Calendar.getInstance()
+                    DatePickerDialog(
+                        context,
+                        { _, y, m, d ->
+                            calendar.set(y, m, d); onFilterChanged(
+                            FilterType.DATE,
+                            calendar.time
+                        )
+                        },
+                        calendar.get(Calendar.YEAR),
+                        calendar.get(Calendar.MONTH),
+                        calendar.get(Calendar.DAY_OF_MONTH)
+                    ).show()
+                }
+        )
+
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text("Sortuj według", style = MaterialTheme.typography.titleMedium)
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            SegmentedButton(selected = options.sortType == SortType.CREATION_DATE, onClick = { onSortChanged(SortType.CREATION_DATE) }, shape = SegmentedButtonDefaults.itemShape(index = 0, count = 4)) { Text("Nowe") }
+            SegmentedButton(selected = options.sortType == SortType.START_DATE, onClick = { onSortChanged(SortType.START_DATE) }, shape = SegmentedButtonDefaults.itemShape(index = 1, count = 4)) { Text("Data") }
+            SegmentedButton(selected = options.sortType == SortType.DISTANCE, onClick = { onSortChanged(SortType.DISTANCE) }, shape = SegmentedButtonDefaults.itemShape(index = 2, count = 4)) { Text("Blisko") }
+            SegmentedButton(selected = options.sortType == SortType.NAME, onClick = { onSortChanged(SortType.NAME) }, shape = SegmentedButtonDefaults.itemShape(index = 3, count = 4)) { Text("A-Z") }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(onClick = onSearchClick, modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)) {
+            Text("Zastosuj", fontSize = 16.sp)
+        }
+    }
+}
+
+// --- Funkcje pomocnicze ---
+
+private fun hasLocationPermission(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 }

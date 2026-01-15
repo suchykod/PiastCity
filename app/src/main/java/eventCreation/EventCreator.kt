@@ -117,19 +117,20 @@ class EventCreatorViewModel(private val eventId: String?) : ViewModel() {
             _isLoading.value = true
             firestore.collection("events2").document(eventId).get()
                 .addOnSuccessListener { doc ->
-                    val event = doc.toObject<Event>()
-                    event?.let {
-                        _name.value = it.name ?: ""
-                        _description.value = it.description ?: ""
-                        it.imageUrl?.let { url ->
-                            _imageUri.value = url.toUri()
-                            originalImageUrl = url
+                    if (doc.exists()) {
+                        // ZMIANA: Ręczne i bezpieczne pobieranie wartości
+                        _name.value = doc.getString("name") ?: ""
+                        _description.value = doc.getString("description") ?: ""
+                        val imageUrl = doc.getString("imageUrl")
+                        if (imageUrl != null) {
+                            _imageUri.value = imageUrl.toUri()
+                            originalImageUrl = imageUrl
                         }
-                        _startDate.value = it.startDate?.toDate()
-                        _endDate.value = it.endDate?.toDate()
-                        _tags.value = it.tags ?: emptyList()
-                        _latitude.value = it.latitude
-                        _longitude.value = it.longitude
+                        _startDate.value = doc.getTimestamp("startDate")?.toDate()
+                        _endDate.value = doc.getTimestamp("endDate")?.toDate()
+                        _tags.value = doc.get("tags") as? List<String> ?: emptyList()
+                        _latitude.value = doc.getDouble("latitude")
+                        _longitude.value = doc.getDouble("longitude")
                     }
                     _isLoading.value = false
                 }
@@ -175,18 +176,18 @@ class EventCreatorViewModel(private val eventId: String?) : ViewModel() {
     }
 
     private fun updateEventInFirestore(imageUrl: String?, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        // W trybie edycji pobieramy istniejący dokument, żeby zaktualizować pola, a nie nadpisać całość
-        // To bezpieczniejsze, jeśli model Event w Firestore ma więcej pól niż w aplikacji
-        val eventDataMap = mutableMapOf<String, Any?>(
-            "name" to _name.value,
-            "owner" to auth.currentUser?.email,
+        // ZMIANA: Używamy asercji (!!) dla pól, które wiemy, że nie są nullem po walidacji UI
+        // Zapewnia to bezpieczeństwo typów przy zmianie modelu na non-nullable.
+        val eventDataMap = mutableMapOf(
+            "name" to _name.value!!,
+            "owner" to auth.currentUser?.email!!,
             "description" to _description.value?.ifBlank { null },
             "tags" to _tags.value?.ifEmpty { null },
-            "longitude" to _longitude.value,
-            "latitude" to _latitude.value,
-            "startDate" to _startDate.value?.let { Timestamp(it) },
+            "longitude" to _longitude.value!!,
+            "latitude" to _latitude.value!!,
+            "startDate" to _startDate.value?.let { Timestamp(it) }!!,
             "endDate" to _endDate.value?.let { Timestamp(it) },
-            "imageUrl" to imageUrl
+            "imageUrl" to imageUrl!!
         )
 
         val task = if (isEditMode && eventId != null) {

@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -69,10 +70,11 @@ import kotlinx.coroutines.tasks.await
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.roundToInt
 
 // --- Modele Danych dla UI ---
 
-enum class FilterType { NONE, USERNAME, TAG, DATE }
+enum class FilterType { NONE, USERNAME, TAG, DISTANCE } // ZMIANA: DATE -> DISTANCE
 enum class SortType { CREATION_DATE, START_DATE, DISTANCE, NAME }
 
 data class EventOptions(
@@ -104,7 +106,11 @@ class EventSearchViewModel : ViewModel() {
     private val _options = MutableLiveData(EventOptions())
     val options: LiveData<EventOptions> = _options
 
-    fun updateFilter(type: FilterType, value: Any?) { _options.value = EventOptions(filterType = type, filterValue = value, sortType = _options.value?.sortType ?: SortType.CREATION_DATE, userLocation = _options.value?.userLocation) }
+    fun updateFilter(type: FilterType, value: Any?) {
+        val currentOptions = _options.value ?: EventOptions()
+        _options.value = currentOptions.copy(filterType = type, filterValue = value)
+    }
+
     fun updateSort(type: SortType) { _options.value = _options.value?.copy(sortType = type) }
     fun updateUserLocation(location: Location) { _options.value = _options.value?.copy(userLocation = location) }
     fun clearOptions() { _options.value = EventOptions(userLocation = _options.value?.userLocation) }
@@ -115,26 +121,17 @@ class EventSearchViewModel : ViewModel() {
             val currentOptions = _options.value ?: EventOptions()
             var query: Query = firestore.collection("events2")
 
-            // --- Logika Filtrowania (tylko jedno kryterium na raz) ---
+            // --- Logika Filtrowania (w Firestore) ---
             when (currentOptions.filterType) {
                 FilterType.TAG -> {
                     val tag = currentOptions.filterValue as? String
                     if (!tag.isNullOrBlank()) query = query.whereArrayContains("tags", tag)
-                }
-                FilterType.DATE -> {
-                    val date = currentOptions.filterValue as? Date
-                    if (date != null) {
-                        val calStart = Calendar.getInstance().apply { time = date; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0) }
-                        val calEnd = Calendar.getInstance().apply { time = date; set(Calendar.HOUR_OF_DAY, 23); set(Calendar.MINUTE, 59) }
-                        query = query.whereGreaterThanOrEqualTo("startDate", calStart.time).whereLessThanOrEqualTo("startDate", calEnd.time)
-                    }
                 }
                 FilterType.USERNAME -> {
                     val username = currentOptions.filterValue as? String
                     if (!username.isNullOrBlank()) {
                         val userQuery = firestore.collection("users").whereEqualTo("username", username).limit(1).get().await()
                         if (!userQuery.isEmpty) {
-                            // ZMIANA: Pobierz pierwszy dokument z listy
                             val ownerEmail = userQuery.documents[0].getString("firebaseUser")
                             query = query.whereEqualTo("owner", ownerEmail)
                         } else {
@@ -144,7 +141,8 @@ class EventSearchViewModel : ViewModel() {
                         }
                     }
                 }
-                FilterType.NONE -> { /* Brak filtrowania */ }
+                // ZMIANA: Filtrowanie po dystansie dzieje się po stronie klienta, więc nic tu nie robimy
+                FilterType.DISTANCE, FilterType.NONE -> { /* Brak filtrowania w zapytaniu do Firestore */ }
             }
 
             // --- Logika Sortowania (w zapytaniu) ---
@@ -155,20 +153,41 @@ class EventSearchViewModel : ViewModel() {
                 SortType.DISTANCE -> { /* Sortowanie po dystansie robimy po stronie klienta */ }
             }
 
+            Log.d("FirestoreQuery", "Wysyłanie zapytania: FilterType=${currentOptions.filterType}, Value='${currentOptions.filterValue}', Sort=${currentOptions.sortType}")
+
             try {
-                // ZMIANA: Wracamy do prostego toObjects, bo klasy są już nullable
                 var eventList = query.get().await().toObjects(Event::class.java)
 
-                // --- Sortowanie po stronie klienta (tylko dla odległości) ---
-                if (currentOptions.sortType == SortType.DISTANCE && currentOptions.userLocation != null) {
-                    eventList.sortWith(compareBy { event ->
-                        // ZMIANA: Musimy znowu sprawdzać nulle!
+                // --- Filtrowanie i Sortowanie po stronie klienta ---
+
+                // ZMIANA: KROK 2 FILTROWANIA PO DYSTANSIE
+                if (currentOptions.filterType == FilterType.DISTANCE && currentOptions.filterValue is Float && currentOptions.userLocation != null) {
+                    val maxDistanceMeters = (currentOptions.filterValue as Float) * 1000
+                    val userLocation = currentOptions.userLocation
+
+                    eventList = eventList.filter { event ->
                         if (event.latitude != null && event.longitude != null) {
                             val eventLocation = Location("").apply {
                                 latitude = event.latitude
                                 longitude = event.longitude
                             }
-                            currentOptions.userLocation.distanceTo(eventLocation)
+                            userLocation.distanceTo(eventLocation) <= maxDistanceMeters
+                        } else {
+                            false // Odrzuć wydarzenia bez lokalizacji, jeśli filtrujemy po dystansie
+                        }
+                    }
+                }
+
+                // Sortowanie po odległości
+                if (currentOptions.sortType == SortType.DISTANCE && currentOptions.userLocation != null) {
+                    val userLocation = currentOptions.userLocation
+                    eventList.sortWith(compareBy { event ->
+                        if (event.latitude != null && event.longitude != null) {
+                            val eventLocation = Location("").apply {
+                                latitude = event.latitude
+                                longitude = event.longitude
+                            }
+                            userLocation.distanceTo(eventLocation)
                         } else {
                             Float.MAX_VALUE // Wydarzenia bez lokalizacji na koniec
                         }
@@ -182,6 +201,7 @@ class EventSearchViewModel : ViewModel() {
                     _users.postValue(emptyMap())
                 }
             } catch (e: Exception) {
+                Log.e("FirestoreError", "Błąd pobierania wydarzeń: ${e.message}", e)
                 _events.postValue(emptyList())
             } finally {
                 _isSearching.postValue(false)
@@ -193,7 +213,6 @@ class EventSearchViewModel : ViewModel() {
         val ownerEmails = events.mapNotNull { it.owner }.distinct()
         if (ownerEmails.isNotEmpty()) {
             val userSnapshot = firestore.collection("users").whereIn("firebaseUser", ownerEmails).get().await()
-            // ZMIANA: Wracamy do prostego toObject, bo User ma już pusty konstruktor
             val usersMap = userSnapshot.documents.mapNotNull { it.toObject<User>() }
                 .filter { it.firebaseUser != null }
                 .associateBy { it.firebaseUser!! }
@@ -202,7 +221,6 @@ class EventSearchViewModel : ViewModel() {
     }
 
     fun getAddressFromCoordinates(context: Context, event: Event) {
-        // ZMIANA: Musimy sprawdzać nulle!
         if (event.latitude != null && event.longitude != null && event.id != null && _addresses.value?.containsKey(event.id) != true) {
             viewModelScope.launch(Dispatchers.IO) {
                 try {
@@ -221,7 +239,6 @@ class EventSearchViewModel : ViewModel() {
     }
 
     fun deleteEvent(event: Event, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        // ZMIANA: Musimy sprawdzać nulle!
         if (event.owner != currentUserEmail) { onFailure("Możesz usuwać tylko własne wydarzenia."); return }
         if (event.id == null) { onFailure("Błąd: Brak ID wydarzenia."); return }
 
@@ -274,24 +291,19 @@ fun EventSearchScreen(viewModel: EventSearchViewModel = viewModel()) {
         }
     }
 
-
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     var hasLocationPermission by remember { mutableStateOf(hasLocationPermission(context)) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         hasLocationPermission = permissions.values.all { it }
         if (hasLocationPermission) {
-            // Call the new, safe function
             fetchLastLocation(fusedLocationClient) { location ->
                 viewModel.updateUserLocation(location)
             }
         }
     }
 
-
-
     LaunchedEffect(hasLocationPermission) {
         if (hasLocationPermission) {
-            // Call the new, safe function
             fetchLastLocation(fusedLocationClient) { location ->
                 viewModel.updateUserLocation(location)
             }
@@ -300,8 +312,6 @@ fun EventSearchScreen(viewModel: EventSearchViewModel = viewModel()) {
         }
     }
 
-
-    // Pobierz eventy przy pierwszym uruchomieniu
     LaunchedEffect(Unit) {
         viewModel.fetchEvents()
     }
@@ -326,20 +336,15 @@ fun EventSearchScreen(viewModel: EventSearchViewModel = viewModel()) {
             }
         }
     ) { paddingValues ->
-
         if (isSearching) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else if (events.isEmpty()) {
-            Box(modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                 Text("Brak wydarzeń. Zmień kryteria wyszukiwania lub dodaj nowe wydarzenie.", color = Color.Gray, fontSize = 20.sp, textAlign = TextAlign.Center)
             }
         } else {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
+                modifier = Modifier.fillMaxSize().padding(paddingValues),
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -400,26 +405,17 @@ fun EventSearchScreen(viewModel: EventSearchViewModel = viewModel()) {
 @Composable
 fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: Location?, onItemClick: (Event) -> Unit, onItemLongClick: (Event) -> Unit) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = { onItemClick(event) },
-                onLongClick = { onItemLongClick(event) }),
+        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { onItemClick(event) }, onLongClick = { onItemLongClick(event) }),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column {
-            Row(modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 AsyncImage(
                     model = user?.imageUrl,
                     contentDescription = "Avatar",
                     placeholder = painterResource(id = R.drawable.login_bck),
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .border(1.dp, Color.White, CircleShape),
+                    modifier = Modifier.size(52.dp).clip(CircleShape).border(1.dp, Color.White, CircleShape),
                     contentScale = ContentScale.Crop
                 )
                 Spacer(modifier = Modifier.width(12.dp))
@@ -427,7 +423,6 @@ fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: 
                     Text(user?.username ?: "...", fontWeight = FontWeight.Bold, color = Color.White)
                     Text(address ?: "...", color = Color.LightGray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                // ZMIANA: Sprawdzamy nulle
                 if (currentUserLocation != null && event.latitude != null && event.longitude != null) {
                     val eventLocation = Location("").apply { latitude = event.latitude; longitude = event.longitude }
                     val distanceInKm = currentUserLocation.distanceTo(eventLocation) / 1000
@@ -438,9 +433,7 @@ fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: 
             AsyncImage(
                 model = event.imageUrl,
                 contentDescription = event.name,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(350.dp),
+                modifier = Modifier.fillMaxWidth().height(350.dp),
                 contentScale = ContentScale.Crop,
                 placeholder = painterResource(id = R.drawable.login_bck)
             )
@@ -453,9 +446,8 @@ fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: 
                 if (!event.tags.isNullOrEmpty()) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(event.tags.take(10)) { tag ->
-                            // ZMIANA: Dodaj kolory do chipa
                             SuggestionChip(
-                                onClick = { /* ... */ },
+                                onClick = { /* Można tu dodać filtrowanie po kliknięciu */ },
                                 label = { Text(tag) },
                                 colors = SuggestionChipDefaults.suggestionChipColors(
                                     containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
@@ -472,56 +464,73 @@ fun EventCard(event: Event, user: User?, address: String?, currentUserLocation: 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OptionsPanel(options: EventOptions, onFilterChanged: (FilterType, Any?) -> Unit, onSortChanged: (SortType) -> Unit, onSearchClick: () -> Unit) {
-    val context = LocalContext.current
-    var usernameFilter by remember { mutableStateOf((options.filterValue as? String)?.takeIf { options.filterType == FilterType.USERNAME } ?: "") }
-    var tagFilter by remember { mutableStateOf((options.filterValue as? String)?.takeIf { options.filterType == FilterType.TAG } ?: "") }
-    val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()) }
+fun OptionsPanel(
+    options: EventOptions,
+    onFilterChanged: (FilterType, Any?) -> Unit,
+    onSortChanged: (SortType) -> Unit,
+    onSearchClick: () -> Unit
+) {
+    var usernameFilter by remember {
+        mutableStateOf(if (options.filterType == FilterType.USERNAME) options.filterValue as? String ?: "" else "")
+    }
+    var tagFilter by remember {
+        mutableStateOf(if (options.filterType == FilterType.TAG) options.filterValue as? String ?: "" else "")
+    }
+    // ZMIANA: Lokalny stan dla suwaka
+    var distanceFilter by remember {
+        mutableStateOf(if (options.filterType == FilterType.DISTANCE) options.filterValue as? Float ?: 25f else 25f)
+    }
 
-    Column(modifier = Modifier
-        .padding(16.dp)
-        .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LaunchedEffect(options.filterType) {
+        if (options.filterType != FilterType.USERNAME) usernameFilter = ""
+        if (options.filterType != FilterType.TAG) tagFilter = ""
+        // ZMIANA: Jeśli aktywny jest inny filtr, zresetuj suwak do wartości domyślnej
+        if (options.filterType != FilterType.DISTANCE) distanceFilter = 25f
+    }
+
+    Column(
+        modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         Text("Filtruj i Sortuj", style = MaterialTheme.typography.titleLarge, modifier = Modifier.align(Alignment.CenterHorizontally))
-
         Text("Filtruj (tylko jedno pole aktywne)", style = MaterialTheme.typography.titleMedium)
+
         OutlinedTextField(
             value = usernameFilter,
-            onValueChange = { usernameFilter = it; onFilterChanged(FilterType.USERNAME, it) },
+            onValueChange = {
+                usernameFilter = it
+                onFilterChanged(FilterType.USERNAME, it.ifBlank { null })
+            },
             label = { Text("Nazwa użytkownika") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
+
         OutlinedTextField(
             value = tagFilter,
-            onValueChange = { tagFilter = it; onFilterChanged(FilterType.TAG, it) },
+            onValueChange = {
+                tagFilter = it
+                onFilterChanged(FilterType.TAG, it.ifBlank { null })
+            },
             label = { Text("Tag") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
-        OutlinedTextField(
-            value = (options.filterValue as? Date)?.takeIf { options.filterType == FilterType.DATE }?.let { dateFormat.format(it) } ?: "",
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Data wydarzenia") },
-            trailingIcon = { Icon(Icons.Default.DateRange, "Wybierz datę") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    val calendar = Calendar.getInstance()
-                    DatePickerDialog(
-                        context,
-                        { _, y, m, d ->
-                            calendar.set(y, m, d); onFilterChanged(
-                            FilterType.DATE,
-                            calendar.time
-                        )
-                        },
-                        calendar.get(Calendar.YEAR),
-                        calendar.get(Calendar.MONTH),
-                        calendar.get(Calendar.DAY_OF_MONTH)
-                    ).show()
-                }
-        )
+
+        // ZMIANA: Suwak do filtrowania po odległości
+        Column {
+            Text("Maksymalna odległość: ${distanceFilter.roundToInt()} km", style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = distanceFilter,
+                onValueChange = {
+                    distanceFilter = it
+                    onFilterChanged(FilterType.DISTANCE, it)
+                },
+                valueRange = 1f..100f,
+                steps = 98 // 100 - 1 - 1 (dla kroków co 1)
+            )
+        }
+
 
         Divider(modifier = Modifier.padding(vertical = 8.dp))
 
@@ -535,9 +544,7 @@ fun OptionsPanel(options: EventOptions, onFilterChanged: (FilterType, Any?) -> U
 
         Spacer(Modifier.height(16.dp))
 
-        Button(onClick = onSearchClick, modifier = Modifier
-            .fillMaxWidth()
-            .height(50.dp)) {
+        Button(onClick = onSearchClick, modifier = Modifier.fillMaxWidth().height(50.dp)) {
             Text("Zastosuj", fontSize = 16.sp)
         }
     }

@@ -416,8 +416,14 @@ fun EventCreatorScreen(viewModel: EventCreatorViewModel) {
                 // --- SEKCJA DANYCH PODSTAWOWYCH ---
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { viewModel.onNameChange(it); isNameError = false },
-                    label = { Text("Nazwa wydarzenia*") },
+                    onValueChange = {
+                        // NOWA LINIA: Sprawdzamy długość przed aktualizacją
+                        if (it.length <= 25) {
+                            viewModel.onNameChange(it)
+                        }
+                        isNameError = false
+                    },
+                    label = { Text("Nazwa wydarzenia (max 25 znaków)") }, // ZMIANA: Dodajemy informację w etykiecie
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     isError = isNameError

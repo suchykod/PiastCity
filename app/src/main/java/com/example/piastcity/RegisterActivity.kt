@@ -1,101 +1,203 @@
 package com.example.piastcity
 
-import User.UserCreate
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import com.example.piastcity.databinding.ActivityRegisterBinding
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
 
-class RegisterActivity : AppCompatActivity() {
+class RegisterActivity : ComponentActivity() {
 
-
-    private lateinit var binding:ActivityRegisterBinding
     private val firebaseAuth = FirebaseAuth.getInstance()
-    private val firestore = Firebase.firestore
-    private var user: String = ""
-    private var email: String = ""
-    private var password: String = ""
-    private var passwordConfirm: String = ""
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_register)
-
-        binding = ActivityRegisterBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        user = binding.registerEmail.text.toString()
-        email = binding.registerEmail.text.toString()
-        password = binding.registerPassword.text.toString()
-        passwordConfirm = binding.register2Password.text.toString()
-    }
-
-    fun Signup(view: View) {
-        if (arePasswordsMaching(view) and isEmailValid(view) and isPasswordValid(view)){
-            Toast.makeText(this, "you have been registered succesfully", Toast.LENGTH_LONG).show()
-            firebaseAuth.createUserWithEmailAndPassword(email, password)
-            //loginUser(email, password)
-            goToLoginActivity(view)
+        setContent {
+            RegisterScreen(
+                onRegisterClick = { email, password ->
+                    signup(email, password)
+                },
+                onLoginClick = {
+                    goToLoginActivity()
+                }
+            )
         }
-        else{
-            if (!arePasswordsMaching(view)){
-                Toast.makeText(this, "Passwords doesn't match", Toast.LENGTH_LONG).show()
-            }
-            else if (!isEmailValid(view)){
-                Toast.makeText(this, "make sure that e-mail follows this shema _..._@_..._._..._", Toast.LENGTH_LONG).show()
-            }
-            else if(!isPasswordValid(view)){
-                Toast.makeText(this, "Password need to be at least 8 char long and contain a-z and A-Z and 0-9 and Special char", Toast.LENGTH_LONG).show()
-            }
-        }
-
     }
 
-    fun arePasswordsMaching(view: View): Boolean{
-        password = binding.registerPassword.text.toString()
-        passwordConfirm = binding.register2Password.text.toString()
-
-        return password==passwordConfirm
+    private fun signup(email: String, password: String) {
+        firebaseAuth.createUserWithEmailAndPassword(email, password)
+            .addOnCompleteListener(this) { task ->
+                if (task.isSuccessful) {
+                    Toast.makeText(this, "Rejestracja pomyślna!", Toast.LENGTH_SHORT).show()
+                    goToLoginActivity()
+                } else {
+                    val error = task.exception?.message ?: "Nieznany błąd rejestracji."
+                    Toast.makeText(this, "Błąd: $error", Toast.LENGTH_LONG).show()
+                }
+            }
     }
 
-    fun isPasswordValid(view: View): Boolean{
-        password = binding.registerPassword.text.toString()
+    private fun goToLoginActivity() {
+        val intent = Intent(this, LoginActivity::class.java)
+        startActivity(intent)
+        finish()
+    }
+}
+
+// --- Funkcja kompozycyjna dla UI ---
+@Composable
+private fun RegisterScreen(onRegisterClick: (String, String) -> Unit, onLoginClick: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordConfirm by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    var isEmailError by remember { mutableStateOf(false) }
+    var isPasswordError by remember { mutableStateOf(false) }
+    var isPasswordConfirmError by remember { mutableStateOf(false) }
+
+    // Prywatne funkcje walidacji (nie trzeba ich trzymać w Activity, jeśli są używane tylko tutaj)
+    fun isEmailValid(email: String): Boolean = android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
+    fun isPasswordValid(password: String): Boolean {
         val lowercaseRegex = Regex("[a-z]")
         val uppercaseRegex = Regex("[A-Z]")
         val numberRegex = Regex("[0-9]")
         val specialCharRegex = Regex("[^A-Za-z0-9]")
 
-        val hasLowercase = lowercaseRegex.containsMatchIn(password)
-        val hasUppercase = uppercaseRegex.containsMatchIn(password)
-        val hasNumber = numberRegex.containsMatchIn(password)
-        val hasSpecialChar = specialCharRegex.containsMatchIn(password)
-        val isLongerThan8char = password.length >= 8
-
-        return hasLowercase && hasUppercase && hasNumber && hasSpecialChar && isLongerThan8char
+        return password.length >= 8 &&
+                lowercaseRegex.containsMatchIn(password) &&
+                uppercaseRegex.containsMatchIn(password) &&
+                numberRegex.containsMatchIn(password) &&
+                specialCharRegex.containsMatchIn(password)
     }
 
-    fun isEmailValid(view: View): Boolean{
-        email = binding.registerEmail.text.toString()
-        val emailRegex = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.login_bck),
+            contentDescription = "Tło",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
 
-        return emailRegex.matches(email)
-    }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "welcome to",
+                fontSize = 40.sp,
+            )
 
-    fun goToLoginActivity(view: View) {
-        val intent = Intent(this, LoginActivity::class.java)
-        startActivity(intent)
-        // zabij aktywność po przejściu dalej
-        finish()
-    }
+            Image(
+                painter = painterResource(id = R.drawable.icon_piast_city),
+                contentDescription = "Logo",
+                modifier = Modifier.size(180.dp)
+            )
 
-    fun goToCreateUserActivity(view: View){
-        val userCreateIntent = Intent(this, UserCreate::class.java)
-        startActivity(userCreateIntent)
-        // zabij aktywność po przejściu dalej
-        finish()
+            Spacer(modifier = Modifier.height(16.dp))
 
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it; isEmailError = false },
+                label = { Text("Adres e-mail") },
+                singleLine = true,
+                isError = isEmailError,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (isEmailError) {
+                Text("Podaj poprawny adres e-mail", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it; isPasswordError = false },
+                label = { Text("Hasło") },
+                singleLine = true,
+                isError = isPasswordError,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (isPasswordError) {
+                Text(
+                    text = "Hasło musi mieć min. 8 znaków, cyfrę, wielką i małą literę oraz znak specjalny.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = passwordConfirm,
+                onValueChange = { passwordConfirm = it; isPasswordConfirmError = false },
+                label = { Text("Potwierdź hasło") },
+                singleLine = true,
+                isError = isPasswordConfirmError,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (isPasswordConfirmError) {
+                Text("Hasła nie są takie same.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = {
+                    isEmailError = !isEmailValid(email)
+                    isPasswordError = !isPasswordValid(password)
+                    isPasswordConfirmError = password != passwordConfirm
+
+                    if (!isEmailError && !isPasswordError && !isPasswordConfirmError) {
+                        onRegisterClick(email, password)
+                    } else {
+                        Toast.makeText(context, "Popraw błędy w formularzu", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Zarejestruj się")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            ClickableText(
+                text = AnnotatedString("Masz już konto?"),
+                onClick = { onLoginClick() },
+                style = TextStyle(
+                    color = Color(0xFF4a99de),
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+            )
+        }
     }
 }

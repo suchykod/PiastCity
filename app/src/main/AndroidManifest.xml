@@ -44,12 +44,12 @@
 
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="eventCreation.fileprovider"
             android:exported="false"
-            android:grantUriPermissions="true">
+            android:grantUriPermissions="true"
+            android:authorities="${applicationId}.fileprovider">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/fileprovider" />
+                android:resource="@xml/file_paths" />
         </provider>
 
         <activity
@@ -77,7 +77,9 @@
         <activity
             android:name="eventSearch.EventSearchActivity"
             android:exported="true" />
-
+        <activity
+            android:name="eventSearch.EventDetailActivity"
+            android:exported="false" />
         <meta-data
             android:name="preloaded_fonts"
             android:resource="@array/preloaded_fonts" />

@@ -1,181 +1,161 @@
 package com.example.piastcity
+
 import android.Manifest
-import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.Location
 import android.os.Bundle
-import android.widget.Button
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.app.ActivityCompat.OnRequestPermissionsResultCallback
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.piastcity.PermissionUtils.PermissionDeniedDialog.Companion.newInstance
-import com.example.piastcity.PermissionUtils.isPermissionGranted
-import com.google.android.gms.maps.GoogleMap
-import com.google.android.gms.maps.GoogleMap.OnMyLocationButtonClickListener
-import com.google.android.gms.maps.GoogleMap.OnMyLocationClickListener
-import com.google.android.gms.maps.OnMapReadyCallback
-import com.google.android.gms.maps.SupportMapFragment
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.Marker
-import com.google.android.gms.maps.model.MarkerOptions
-import eventCreation.EventCreator
+import com.google.maps.android.compose.*
 
-class MyLocationDemoActivity : AppCompatActivity(),
-    OnMyLocationButtonClickListener,
-    OnMyLocationClickListener, OnMapReadyCallback,
-    OnRequestPermissionsResultCallback {
-    private var permissionDenied = false
-    private lateinit var map: GoogleMap
-    private lateinit var chooseBtn : Button
-    private lateinit var marker: Marker
-    private var isCreator: Boolean = false
+class MyLocationDemoActivity : ComponentActivity() {
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.my_location_demo)
-        val mapFragment =
-            supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment?
-        mapFragment?.getMapAsync(this)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        chooseBtn = findViewById(R.id.btn_choose)
+        val isCreator = intent.getBooleanExtra("isCreator", false)
+        val initialLatitude = intent.getDoubleExtra("localization_latitude", 0.0)
+        val initialLongitude = intent.getDoubleExtra("localization_longitude", 0.0)
+
+        setContent {
+            MapScreen(
+                isCreator = isCreator,
+                initialPosition = if (initialLatitude != 0.0 && initialLongitude != 0.0) LatLng(initialLatitude, initialLongitude) else null,
+                fusedLocationClient = fusedLocationClient
+            )
+        }
+    }
+}
+
+@Composable
+fun MapScreen(
+    isCreator: Boolean,
+    initialPosition: LatLng?,
+    fusedLocationClient: FusedLocationProviderClient
+) {
+    val context = LocalContext.current
+    val activity = (context as Activity)
+
+    var hasLocationPermission by remember {
+        mutableStateOf(hasLocationPermission(context))
     }
 
-    override fun onMapReady(googleMap: GoogleMap) {
-        map = googleMap
-        googleMap.setOnMyLocationButtonClickListener(this)
-        googleMap.setOnMyLocationClickListener(this)
-        isCreator = intent.getBooleanExtra("isCreator", false)
-        if (isCreator)
-        {
-            googleMap.setOnMapClickListener {
-                map.clear()
-                marker = map.addMarker(MarkerOptions().position(it))!!
-                chooseBtn.setOnClickListener{ btn_choose(marker.position) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = { permissions ->
+            hasLocationPermission = permissions.values.all { it }
+        }
+    )
+
+    // Stan mapy
+    var selectedPosition by remember { mutableStateOf<LatLng?>(initialPosition) }
+    val defaultCameraPosition = LatLng(51.1079, 17.0385) // Wrocław
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(initialPosition ?: defaultCameraPosition, 15f)
+    }
+
+    // Uruchom na początku, aby poprosić o uprawnienia
+    LaunchedEffect(key1 = true) {
+        if (!hasLocationPermission) {
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
+    Scaffold { paddingValues ->
+        Box(
+            modifier = Modifier
+                .padding(paddingValues)
+                .fillMaxSize()
+        ) {
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraPositionState,
+                properties = MapProperties(
+                    isMyLocationEnabled = hasLocationPermission // Włącz warstwę "moja lokalizacja"
+                ),
+                uiSettings = MapUiSettings(
+                    myLocationButtonEnabled = hasLocationPermission, // Pokaż przycisk "moja lokalizacja"
+                    zoomControlsEnabled = true // Pokaż przyciski zoom
+                ),
+                onMapClick = {
+                    if (isCreator) {
+                        selectedPosition = it
+                    }
+                }
+            ) {
+                // Wyświetl znacznik, jeśli jakaś pozycja jest wybrana/przekazana
+                selectedPosition?.let {
+                    Marker(
+                        state = MarkerState(position = it),
+                        title = if (isCreator) "Wybrana lokalizacja" else "Lokalizacja wydarzenia"
+                    )
+                }
+            }
+
+            // Przycisk na dole ekranu
+            Button(
+                onClick = {
+                    if (isCreator) {
+                        selectedPosition?.let {
+                            // Zwróć wynik do poprzedniej aktywności
+                            val resultIntent = Intent().apply {
+                                putExtra("latitude", it.latitude)
+                                putExtra("longitude", it.longitude)
+                            }
+                            activity.setResult(Activity.RESULT_OK, resultIntent)
+                            activity.finish()
+                        }
+                    } else {
+                        // W trybie widza przycisk po prostu zamyka mapę
+                        activity.finish()
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+                // Przycisk jest aktywny tylko w trybie kreatora, jeśli wybrano punkt
+                enabled = if (isCreator) selectedPosition != null else true
+            ) {
+                Text(if (isCreator) "Wybierz tę lokalizację" else "Powrót")
             }
         }
-        else
-        {
-            chooseBtn.setOnClickListener{ finish() }
-            var loc = LatLng(intent.getDoubleExtra("localization_latitude", 0.0), intent.getDoubleExtra("localization_longitude", 0.0))
-            map.addMarker(MarkerOptions().position(loc))
-        }
-
-        enableMyLocation()
     }
+}
 
-    private fun btn_choose(data: LatLng)
-    {
-        val returnIntent = Intent(this, EventCreator::class.java)
-        returnIntent.putExtra("longitude", data.longitude.toString())
-        returnIntent.putExtra("latitude", data.latitude.toString())
-        startActivity(returnIntent)
-        finish()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun enableMyLocation() {
-
-        // 1. Check if permissions are granted, if so, enable the my location layer
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            map.isMyLocationEnabled = true
-            return
-        }
-
-        // 2. If if a permission rationale dialog should be shown
-        if (ActivityCompat.shouldShowRequestPermissionRationale(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) || ActivityCompat.shouldShowRequestPermissionRationale(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-        ) {
-            PermissionUtils.RationaleDialog.newInstance(
-                LOCATION_PERMISSION_REQUEST_CODE, true
-            ).show(supportFragmentManager, "dialog")
-            return
-        }
-
-        // 3. Otherwise, request permission
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ),
-            LOCATION_PERMISSION_REQUEST_CODE
-        )
-    }
-
-    override fun onMyLocationButtonClick(): Boolean {
-        Toast.makeText(this, "MyLocation button clicked", Toast.LENGTH_SHORT)
-            .show()
-        // Return false so that we don't consume the event and the default behavior still occurs
-        // (the camera animates to the user's current position).
-        return false
-    }
-
-    override fun onMyLocationClick(location: Location) {
-        Toast.makeText(this, "Current location:\n$location", Toast.LENGTH_LONG)
-            .show()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
-    ) {
-        if (requestCode != LOCATION_PERMISSION_REQUEST_CODE) {
-            super.onRequestPermissionsResult(
-                requestCode,
-                permissions,
-                grantResults
-            )
-            return
-        }
-
-        if (isPermissionGranted(
-                permissions,
-                grantResults,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) || isPermissionGranted(
-                permissions,
-                grantResults,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-        ) {
-            // Enable the my location layer if the permission has been granted.
-            enableMyLocation()
-        } else {
-            // Permission was denied. Display an error message
-            // Display the missing permission error dialog when the fragments resume.
-            permissionDenied = true
-        }
-    }
-
-    override fun onResumeFragments() {
-        super.onResumeFragments()
-        if (permissionDenied) {
-            // Permission was not granted, display error dialog.
-            showMissingPermissionError()
-            permissionDenied = false
-        }
-    }
-
-    private fun showMissingPermissionError() {
-        newInstance(true).show(supportFragmentManager, "dialog")
-    }
-
-    companion object {
-        private const val LOCATION_PERMISSION_REQUEST_CODE = 1
-    }
+private fun hasLocationPermission(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+        context, Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(
+        context, Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
 }

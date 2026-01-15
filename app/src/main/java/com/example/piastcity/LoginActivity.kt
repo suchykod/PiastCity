@@ -3,116 +3,210 @@ package com.example.piastcity
 import User.UserCreate
 import android.content.Intent
 import android.os.Bundle
-import android.util.Log
-import android.view.View
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import com.example.piastcity.databinding.ActivityLoginBinding
-import com.google.android.gms.tasks.Task
-import com.google.firebase.auth.AuthResult
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import eventSearch.EventSearchActivity
 
-class LoginActivity : AppCompatActivity() {
+class LoginActivity : ComponentActivity() {
 
-    private var firestore = Firebase.firestore;
-    private lateinit var binding: ActivityLoginBinding;
-    private lateinit var firebaseAuth: FirebaseAuth;
-    private var email: String = ""
-    private var password: String = ""
+    private val firebaseAuth = FirebaseAuth.getInstance()
+    private val firestore = Firebase.firestore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_login)
-
-        binding = ActivityLoginBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        firebaseAuth = FirebaseAuth.getInstance()
-
-        email = binding.loginEmail.text.toString()
-        password = binding.loginPassword.text.toString()
-
-    }
-
-    fun Login(view: View) {
-        if (isEmailValid(view) and isPasswordValid(view)){
-            loginUser(email, password)
-
-            firestore.collection("users")
-                .whereEqualTo("firebaseUser", email)
-                .get()
-                .addOnSuccessListener {
-                    if(!it.isEmpty)
-                        goToApp(view)
-                    else
-                        goToCreateUser(view)
+        setContent {
+            // W przyszłości możesz opakować to w swój motyw
+            LoginScreen(
+                onLoginClick = { email, password ->
+                    // Logika biznesowa jest wywoływana stąd
+                    loginUser(email, password)
+                },
+                onRegisterClick = {
+                    goToRegisterActivity()
                 }
+            )
         }
-
     }
-    private fun loginUser(email: String, password: String) {
-        Log.i("DUP", email)
-        firebaseAuth.signInWithEmailAndPassword(email, password)
-            .addOnCompleteListener(this) { task: Task<AuthResult> ->
-                if (task.isSuccessful) {
-                    // Login successful
-                    val user: FirebaseUser? = firebaseAuth.currentUser
-                    Toast.makeText(this,"login succesful", Toast.LENGTH_LONG)
-                    // You can perform additional operations here, such as retrieving user data
 
+    private fun loginUser(email: String, password: String) {
+        // KROK 1: Zaloguj użytkownika za pomocą Firebase Auth
+        firebaseAuth.signInWithEmailAndPassword(email, password)
+            .addOnCompleteListener(this) { task ->
+                if (task.isSuccessful) {
+                    // KROK 2: Jeśli logowanie się powiodło, sprawdź profil w Firestore
+                    Toast.makeText(this, "Logowanie pomyślne!", Toast.LENGTH_SHORT).show()
+                    checkUserProfile(task.result.user?.email)
                 } else {
-                    // Login failed
-                    Toast.makeText(
-                        applicationContext,
-                        "Login failed. ${task.exception?.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    // Logowanie nie powiodło się, pokaż błąd
+                    val error = task.exception?.message ?: "Nieznany błąd logowania."
+                    Toast.makeText(this, "Błąd: $error", Toast.LENGTH_LONG).show()
                 }
             }
     }
 
-    fun isPasswordValid(view: View): Boolean{
-        password = binding.loginPassword.text.toString()
-        val lowercaseRegex = Regex("[a-z]")
-        val uppercaseRegex = Regex("[A-Z]")
-        val numberRegex = Regex("[0-9]")
-        val specialCharRegex = Regex("[^A-Za-z0-9]")
+    private fun checkUserProfile(userEmail: String?) {
+        if (userEmail == null) {
+            Toast.makeText(this, "Błąd: Brak adresu email użytkownika.", Toast.LENGTH_LONG).show()
+            return
+        }
 
-        val hasLowercase = lowercaseRegex.containsMatchIn(password)
-        val hasUppercase = uppercaseRegex.containsMatchIn(password)
-        val hasNumber = numberRegex.containsMatchIn(password)
-        val hasSpecialChar = specialCharRegex.containsMatchIn(password)
-        val isLongerThan8char = password.length >= 8
-
-        return hasLowercase && hasUppercase && hasNumber && hasSpecialChar && isLongerThan8char
+        firestore.collection("users")
+            .whereEqualTo("firebaseUser", userEmail)
+            .get()
+            .addOnSuccessListener { documents ->
+                // KROK 3: Przejdź do odpowiedniej aktywności
+                if (!documents.isEmpty) {
+                    // Profil istnieje, przejdź do głównej części aplikacji
+                    goToApp()
+                } else {
+                    // Profil nie istnieje, przejdź do tworzenia profilu
+                    goToCreateUser()
+                }
+            }
+            .addOnFailureListener { e ->
+                Toast.makeText(this, "Błąd pobierania profilu: ${e.message}", Toast.LENGTH_LONG).show()
+            }
     }
 
-    fun isEmailValid(view: View): Boolean{
-        email = binding.loginEmail.text.toString()
-        val emailRegex = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
-
-        return emailRegex.matches(email)
+    // --- Metody nawigacyjne ---
+    private fun goToRegisterActivity() {
+        val intent = Intent(this, RegisterActivity::class.java)
+        startActivity(intent)
     }
 
-    fun goToRegisterActivity(view: View) {
-        val registerIntent = Intent(this, RegisterActivity::class.java)
-        startActivity(registerIntent)
+    private fun goToApp() {
+        val intent = Intent(this, EventSearchActivity::class.java)
+        startActivity(intent)
+        finishAffinity() // Zamknij wszystkie poprzednie aktywności
     }
 
-    fun goToApp(view: View){
-        val appIntent = Intent(this, EventSearchActivity::class.java)
-        startActivity(appIntent)
-        // zabij aktywność po przejściu dalej
-        finish()
+    private fun goToCreateUser() {
+        val intent = Intent(this, UserCreate::class.java)
+        startActivity(intent)
+        finishAffinity() // Zamknij wszystkie poprzednie aktywności
     }
+}
 
-    fun goToCreateUser(view: View){
-        val crtIntent = Intent(this, UserCreate::class.java)
-        startActivity(crtIntent)
-        finish()
+
+// --- Funkcja kompozycyjna dla ekranu logowania ---
+@Composable
+private fun LoginScreen(
+    onLoginClick: (String, String) -> Unit,
+    onRegisterClick: () -> Unit
+) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    // Prosta walidacja po stronie UI
+    fun isEmailValid(email: String): Boolean = android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.login_bck),
+            contentDescription = "Tło",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "welcome back to",
+                fontSize = 40.sp,
+                // fontFamily = ... // Możesz dodać swoją czcionkę
+            )
+
+            Image(
+                painter = painterResource(id = R.drawable.icon_piast_city),
+                contentDescription = "Logo",
+                modifier = Modifier
+                    .size(180.dp)
+                    .padding(vertical = 16.dp)
+            )
+
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                label = { Text("Adres e-mail") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Hasło") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = {
+                    if (email.isNotBlank() && password.isNotBlank()) {
+                        if (isEmailValid(email)) {
+                            onLoginClick(email, password)
+                        } else {
+                            Toast.makeText(context, "Proszę podać poprawny adres e-mail.", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Wszystkie pola są wymagane.", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Zaloguj się")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            ClickableText(
+                text = AnnotatedString("Nie masz jeszcze konta?"),
+                onClick = { onRegisterClick() },
+                style = TextStyle(
+                    color = Color(0xFF4a99de),
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+            )
+        }
     }
-
 }

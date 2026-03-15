@@ -38,6 +38,7 @@ class MyLocationDemoActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
+        // Odczytuje dane przekazane z poprzedniej aktywności.
         val isCreator = intent.getBooleanExtra("isCreator", false)
         val initialLatitude = intent.getDoubleExtra("localization_latitude", 0.0)
         val initialLongitude = intent.getDoubleExtra("localization_longitude", 0.0)
@@ -65,6 +66,7 @@ fun MapScreen(
         mutableStateOf(hasLocationPermission(context))
     }
 
+    // Launcher do obsługi prośby o uprawnienia do lokalizacji.
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
@@ -72,14 +74,13 @@ fun MapScreen(
         }
     )
 
-    // Stan mapy
     var selectedPosition by remember { mutableStateOf<LatLng?>(initialPosition) }
     val defaultCameraPosition = LatLng(51.1079, 17.0385) // Wrocław
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(initialPosition ?: defaultCameraPosition, 15f)
     }
 
-    // Uruchom na początku, aby poprosić o uprawnienia
+    // Przy pierwszym uruchomieniu ekranu prosi o uprawnienia, jeśli nie są nadane.
     LaunchedEffect(key1 = true) {
         if (!hasLocationPermission) {
             permissionLauncher.launch(
@@ -101,19 +102,20 @@ fun MapScreen(
                 modifier = Modifier.fillMaxSize(),
                 cameraPositionState = cameraPositionState,
                 properties = MapProperties(
-                    isMyLocationEnabled = hasLocationPermission // Włącz warstwę "moja lokalizacja"
+                    isMyLocationEnabled = hasLocationPermission
                 ),
                 uiSettings = MapUiSettings(
-                    myLocationButtonEnabled = hasLocationPermission, // Pokaż przycisk "moja lokalizacja"
-                    zoomControlsEnabled = true // Pokaż przyciski zoom
+                    myLocationButtonEnabled = hasLocationPermission,
+                    zoomControlsEnabled = true
                 ),
                 onMapClick = {
+                    // Pozwala na wybór pozycji na mapie tylko w trybie tworzenia.
                     if (isCreator) {
                         selectedPosition = it
                     }
                 }
             ) {
-                // Wyświetl znacznik, jeśli jakaś pozycja jest wybrana/przekazana
+                // Wyświetla znacznik na wybranej/przekazanej pozycji.
                 selectedPosition?.let {
                     Marker(
                         state = MarkerState(position = it),
@@ -122,12 +124,11 @@ fun MapScreen(
                 }
             }
 
-            // Przycisk na dole ekranu
             Button(
                 onClick = {
                     if (isCreator) {
                         selectedPosition?.let {
-                            // Zwróć wynik do poprzedniej aktywności
+                            // Zwraca wybrane współrzędne do poprzedniej aktywności.
                             val resultIntent = Intent().apply {
                                 putExtra("latitude", it.latitude)
                                 putExtra("longitude", it.longitude)
@@ -136,14 +137,14 @@ fun MapScreen(
                             activity.finish()
                         }
                     } else {
-                        // W trybie widza przycisk po prostu zamyka mapę
+                        // W trybie podglądu, przycisk zamyka mapę.
                         activity.finish()
                     }
                 },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(16.dp),
-                // Przycisk jest aktywny tylko w trybie kreatora, jeśli wybrano punkt
+                // Przycisk wyboru jest aktywny tylko w trybie kreatora, jeśli wybrano punkt.
                 enabled = if (isCreator) selectedPosition != null else true
             ) {
                 Text(if (isCreator) "Wybierz tę lokalizację" else "Powrót")
@@ -152,6 +153,7 @@ fun MapScreen(
     }
 }
 
+// Sprawdza, czy aplikacja posiada uprawnienia do lokalizacji.
 private fun hasLocationPermission(context: Context): Boolean {
     return ContextCompat.checkSelfPermission(
         context, Manifest.permission.ACCESS_FINE_LOCATION

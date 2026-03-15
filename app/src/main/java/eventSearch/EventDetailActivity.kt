@@ -46,7 +46,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
 
-// NOWOŚĆ: ViewModel dla ekranu szczegółów
+// ViewModel dla ekranu szczegółów wydarzenia, pobierający dane z Firestore.
 class EventDetailViewModel(private val eventId: String) : ViewModel() {
     private val firestore = Firebase.firestore
 
@@ -70,6 +70,7 @@ class EventDetailViewModel(private val eventId: String) : ViewModel() {
             }
     }
 
+    // Konwertuje współrzędne geograficzne na czytelny adres.
     fun getAddressFromCoordinates(context: Context, latitude: Double?, longitude: Double?) {
         if (latitude != null && longitude != null) {
             try {
@@ -87,7 +88,7 @@ class EventDetailViewModel(private val eventId: String) : ViewModel() {
     }
 }
 
-// NOWOŚĆ: Fabryka do przekazywania ID do ViewModel
+// Fabryka ViewModelu, umożliwiająca przekazanie `eventId` do jego konstruktora.
 class EventDetailViewModelFactory(private val eventId: String) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(EventDetailViewModel::class.java)) {
@@ -105,13 +106,12 @@ class EventDetailActivity : ComponentActivity() {
         val eventId = intent.getStringExtra("EVENT_ID")
 
         if (eventId == null) {
-            // Jeśli z jakiegoś powodu nie ma ID, zamknij aktywność
+            // Jeśli z jakiegoś powodu nie ma ID, zamknij aktywność.
             finish()
             return
         }
 
         setContent {
-            // Używamy fabryki, aby przekazać ID do ViewModel
             val viewModel: EventDetailViewModel = viewModel(factory = EventDetailViewModelFactory(eventId))
             EventDetailScreen(viewModel)
         }
@@ -125,7 +125,7 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
     val event by viewModel.event.observeAsState()
     val address by viewModel.address.observeAsState()
 
-    // Uruchom pobieranie adresu, gdy tylko wydarzenie zostanie załadowane
+    // Uruchom pobieranie adresu, gdy tylko wydarzenie zostanie załadowane.
     LaunchedEffect(event) {
         event?.let {
             viewModel.getAddressFromCoordinates(context, it.latitude, it.longitude)
@@ -146,8 +146,8 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
                 },
                 actions = {
                     if (isOwner) {
+                        // Wyświetl przycisk edycji tylko dla właściciela wydarzenia.
                         IconButton(onClick = {
-                            // ZMIANA: Uruchom EventCreator w trybie edycji
                             val intent = Intent(context, eventCreation.EventCreator::class.java).apply {
                                 putExtra("EDIT_EVENT_ID", event?.id)
                             }
@@ -161,14 +161,14 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
         }
     ) { paddingValues ->
         when {
-            // Stan ładowania
             event == null -> {
+                // Stan ładowania danych wydarzenia.
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             }
-            // Stan po załadowaniu
             else -> {
+                // Stan po pomyślnym załadowaniu.
                 val loadedEvent = event!!
                 val scrollState = rememberScrollState()
                 val dateFormatter = remember { SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault()) }
@@ -194,7 +194,6 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
                     ) {
                         Text(text = loadedEvent.name ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold)
 
-                        // Data i czas
                         loadedEvent.startDate?.let {
                             Text("Data i czas", style = MaterialTheme.typography.titleMedium)
                             Column {
@@ -205,13 +204,11 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
                             }
                         }
 
-                        // Opis
                         if (!loadedEvent.description.isNullOrBlank()) {
                             Text("Opis", style = MaterialTheme.typography.titleMedium)
                             Text(loadedEvent.description, style = MaterialTheme.typography.bodyLarge)
                         }
 
-                        // Tagi
                         if (!loadedEvent.tags.isNullOrEmpty()) {
                             Text("Tagi", style = MaterialTheme.typography.titleMedium)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -221,7 +218,6 @@ fun EventDetailScreen(viewModel: EventDetailViewModel) {
                             }
                         }
 
-                        // Lokalizacja
                         if (loadedEvent.latitude != null && loadedEvent.longitude != null) {
                             Text("Lokalizacja", style = MaterialTheme.typography.titleMedium)
                             Text(address ?: "Pobieranie adresu...", style = MaterialTheme.typography.bodyLarge)

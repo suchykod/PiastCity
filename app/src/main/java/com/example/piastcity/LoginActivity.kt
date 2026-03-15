@@ -22,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -41,10 +40,8 @@ class LoginActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // W przyszłości możesz opakować to w swój motyw
             LoginScreen(
                 onLoginClick = { email, password ->
-                    // Logika biznesowa jest wywoływana stąd
                     loginUser(email, password)
                 },
                 onRegisterClick = {
@@ -54,22 +51,21 @@ class LoginActivity : ComponentActivity() {
         }
     }
 
+    // Obsługuje proces logowania użytkownika.
     private fun loginUser(email: String, password: String) {
-        // KROK 1: Zaloguj użytkownika za pomocą Firebase Auth
         firebaseAuth.signInWithEmailAndPassword(email, password)
             .addOnCompleteListener(this) { task ->
                 if (task.isSuccessful) {
-                    // KROK 2: Jeśli logowanie się powiodło, sprawdź profil w Firestore
                     Toast.makeText(this, "Logowanie pomyślne!", Toast.LENGTH_SHORT).show()
                     checkUserProfile(task.result.user?.email)
                 } else {
-                    // Logowanie nie powiodło się, pokaż błąd
                     val error = task.exception?.message ?: "Nieznany błąd logowania."
                     Toast.makeText(this, "Błąd: $error", Toast.LENGTH_LONG).show()
                 }
             }
     }
 
+    // Sprawdza, czy zalogowany użytkownik ma już utworzony profil w Firestore.
     private fun checkUserProfile(userEmail: String?) {
         if (userEmail == null) {
             Toast.makeText(this, "Błąd: Brak adresu email użytkownika.", Toast.LENGTH_LONG).show()
@@ -80,12 +76,11 @@ class LoginActivity : ComponentActivity() {
             .whereEqualTo("firebaseUser", userEmail)
             .get()
             .addOnSuccessListener { documents ->
-                // KROK 3: Przejdź do odpowiedniej aktywności
                 if (!documents.isEmpty) {
-                    // Profil istnieje, przejdź do głównej części aplikacji
+                    // Jeśli profil istnieje, przejdź do głównego ekranu aplikacji.
                     goToApp()
                 } else {
-                    // Profil nie istnieje, przejdź do tworzenia profilu
+                    // W przeciwnym razie, skieruj do ekranu tworzenia profilu.
                     goToCreateUser()
                 }
             }
@@ -94,7 +89,7 @@ class LoginActivity : ComponentActivity() {
             }
     }
 
-    // --- Metody nawigacyjne ---
+    // Metody nawigacyjne do przechodzenia między aktywnościami.
     private fun goToRegisterActivity() {
         val intent = Intent(this, RegisterActivity::class.java)
         startActivity(intent)
@@ -103,18 +98,17 @@ class LoginActivity : ComponentActivity() {
     private fun goToApp() {
         val intent = Intent(this, EventSearchActivity::class.java)
         startActivity(intent)
-        finishAffinity() // Zamknij wszystkie poprzednie aktywności
+        finishAffinity() // Zamyka wszystkie poprzednie aktywności, uniemożliwiając powrót.
     }
 
     private fun goToCreateUser() {
         val intent = Intent(this, UserCreate::class.java)
         startActivity(intent)
-        finishAffinity() // Zamknij wszystkie poprzednie aktywności
+        finishAffinity() // Zamyka wszystkie poprzednie aktywności.
     }
 }
 
-
-// --- Funkcja kompozycyjna dla ekranu logowania ---
+// Komponent UI dla ekranu logowania.
 @Composable
 private fun LoginScreen(
     onLoginClick: (String, String) -> Unit,
@@ -124,7 +118,7 @@ private fun LoginScreen(
     var password by remember { mutableStateOf("") }
     val context = LocalContext.current
 
-    // Prosta walidacja po stronie UI
+    // Prosta walidacja adresu e-mail.
     fun isEmailValid(email: String): Boolean = android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -145,7 +139,6 @@ private fun LoginScreen(
             Text(
                 text = "welcome back to",
                 fontSize = 40.sp,
-                // fontFamily = ... // Możesz dodać swoją czcionkę
             )
 
             Image(

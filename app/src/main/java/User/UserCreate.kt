@@ -41,6 +41,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Aktywność odpowiedzialna za stworzenie profilu użytkownika po pierwszej rejestracji.
 class UserCreate : ComponentActivity() {
 
     private val firebaseAuth = FirebaseAuth.getInstance()
@@ -50,7 +51,6 @@ class UserCreate : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Przekazujemy logikę do naszej funkcji kompozycyjnej
             UserCreateScreen(
                 onSaveProfile = { username, photoUri ->
                     saveProfile(username, photoUri)
@@ -59,6 +59,7 @@ class UserCreate : ComponentActivity() {
         }
     }
 
+    // Zapisuje profil użytkownika: zdjęcie do Storage, a dane do Firestore.
     private fun saveProfile(username: String, photoUri: Uri?) {
         val currentUserEmail = firebaseAuth.currentUser?.email
         if (currentUserEmail == null) {
@@ -67,13 +68,13 @@ class UserCreate : ComponentActivity() {
         }
 
         if (photoUri != null) {
-            // Krok 1: Jeśli jest zdjęcie, najpierw wrzuć je do Storage
+            // Etap 1: Upload zdjęcia do Firebase Storage.
             val storageRef = storage.reference.child("users/${currentUserEmail}.jpg")
             storageRef.putFile(photoUri)
                 .addOnSuccessListener {
-                    // Krok 2: Po udanym uploadzie, pobierz URL do zdjęcia
+                    // Etap 2: Pobranie adresu URL do przesłanego zdjęcia.
                     storageRef.downloadUrl.addOnSuccessListener { downloadUrl ->
-                        // Krok 3: Stwórz obiekt User i zapisz go w Firestore
+                        // Etap 3: Zapis obiektu User w Firestore.
                         val user = User(
                             username = username,
                             firebaseUser = currentUserEmail,
@@ -86,9 +87,9 @@ class UserCreate : ComponentActivity() {
                     Toast.makeText(this, "Błąd wysyłania zdjęcia: ${it.message}", Toast.LENGTH_LONG).show()
                 }
         }
-
     }
 
+    // Zapisuje obiekt użytkownika w kolekcji 'users'.
     private fun sendUserToFirestore(user: User) {
         firestore.collection("users").add(user)
             .addOnSuccessListener {
@@ -100,6 +101,7 @@ class UserCreate : ComponentActivity() {
             }
     }
 
+    // Nawiguje do głównego ekranu aplikacji i czyści stos aktywności.
     private fun goToApp() {
         val intent = Intent(this, EventSearchActivity::class.java)
         startActivity(intent)
@@ -107,8 +109,7 @@ class UserCreate : ComponentActivity() {
     }
 }
 
-
-// --- Funkcja kompozycyjna dla UI ---
+// Komponent UI dla ekranu tworzenia profilu.
 @Composable
 private fun UserCreateScreen(
     onSaveProfile: (username: String, photoUri: Uri?) -> Unit
@@ -118,7 +119,7 @@ private fun UserCreateScreen(
     var tempImageUri by remember { mutableStateOf<Uri?>(null) }
     val context = LocalContext.current
 
-    // Nowoczesny sposób obsługi aparatu, zastępuje `startActivityForResult`
+    // Launcher do obsługi rezultatu zrobienia zdjęcia aparatem.
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture(),
         onResult = { success ->
@@ -128,25 +129,15 @@ private fun UserCreateScreen(
         }
     )
 
-    // Funkcja do generowania URI dla nowego zdjęcia
+    // Tworzy tymczasowy, unikalny URI dla nowego zdjęcia.
     fun getTempImageUri(): Uri {
         val timeStamp: String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val storageDir: File? = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-        val file = File.createTempFile(
-            "JPEG_${timeStamp}_",
-            ".jpg",
-            storageDir
-        )
-        // Zwraca Uri z FileProvidera - to jest kluczowe dla nowoczesnego Androida
-        return FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider", // Musi pasować do tego, co masz w Manifeście
-            file
-        )
+        val file = File.createTempFile("JPEG_${timeStamp}_", ".jpg", storageDir)
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Tło, tak jak w poprzednich ekranach
         Image(
             painter = painterResource(id = R.drawable.login_bck),
             contentDescription = "Tło",
@@ -161,19 +152,16 @@ private fun UserCreateScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-// --- Podgląd zdjęcia ---
-// Używamy biblioteki Coil do łatwego ładowania obrazów z Uri
             AsyncImage(
                 model = imageUri,
-                contentDescription = "Avatar",    // USUWAMY PLACEHOLDER - tło i kształt są już zdefiniowane przez modyfikatory!
+                contentDescription = "Avatar",
                 modifier = Modifier
                     .size(120.dp)
-                    .clip(CircleShape) // 1. Nadaj okrągły kształt
-                    .background(Color.Gray) // 2. Nadaj szare tło (widoczne gdy nie ma obrazka)
-                    .border(2.dp, Color.White, CircleShape), // 3. Dodaj białą ramkę
-                contentScale = ContentScale.Crop // Ważne, aby załadowane zdjęcie wypełniło koło
+                    .clip(CircleShape)
+                    .background(Color.Gray)
+                    .border(2.dp, Color.White, CircleShape),
+                contentScale = ContentScale.Crop
             )
-
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -205,11 +193,8 @@ private fun UserCreateScreen(
 
             Button(
                 onClick = {
-                    // Krok 1: Stwórz nową, lokalną i niemodyfikowalną zmienną
                     val newImageUri = getTempImageUri()
-                    // Krok 2: Przypisz jej wartość do stanu
                     tempImageUri = newImageUri
-                    // Krok 3: Użyj bezpiecznej, lokalnej zmiennej do wywołania launchera
                     cameraLauncher.launch(newImageUri)
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -217,12 +202,10 @@ private fun UserCreateScreen(
                 Text("Zrób zdjęcie profilowe")
             }
 
-
             Spacer(modifier = Modifier.height(8.dp))
 
             Button(
                 onClick = {
-                    // Sprawdzamy oba warunki przed zapisem
                     if (username.isNotBlank() && imageUri != null) {
                         onSaveProfile(username, imageUri)
                     } else {
@@ -230,12 +213,11 @@ private fun UserCreateScreen(
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                // ZMIANA: Przycisk aktywny tylko, gdy oba pola są uzupełnione
+                // Przycisk jest aktywny tylko, gdy oba wymagane pola są uzupełnione.
                 enabled = username.isNotBlank() && imageUri != null
             ) {
                 Text("Zapisz profil")
             }
-
         }
     }
 }

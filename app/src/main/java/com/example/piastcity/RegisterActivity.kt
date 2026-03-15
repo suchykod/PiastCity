@@ -11,6 +11,8 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,6 +46,7 @@ class RegisterActivity : ComponentActivity() {
         }
     }
 
+    // Obsługuje proces rejestracji nowego użytkownika w Firebase Authentication.
     private fun signup(email: String, password: String) {
         firebaseAuth.createUserWithEmailAndPassword(email, password)
             .addOnCompleteListener(this) { task ->
@@ -57,6 +60,7 @@ class RegisterActivity : ComponentActivity() {
             }
     }
 
+    // Nawiguje do ekranu logowania po udanej rejestracji.
     private fun goToLoginActivity() {
         val intent = Intent(this, LoginActivity::class.java)
         startActivity(intent)
@@ -64,7 +68,7 @@ class RegisterActivity : ComponentActivity() {
     }
 }
 
-// --- Funkcja kompozycyjna dla UI ---
+// Komponent UI dla ekranu rejestracji.
 @Composable
 private fun RegisterScreen(onRegisterClick: (String, String) -> Unit, onLoginClick: () -> Unit) {
     var email by remember { mutableStateOf("") }
@@ -72,12 +76,15 @@ private fun RegisterScreen(onRegisterClick: (String, String) -> Unit, onLoginCli
     var passwordConfirm by remember { mutableStateOf("") }
     val context = LocalContext.current
 
+    // Stany dla flag błędów walidacji.
     var isEmailError by remember { mutableStateOf(false) }
     var isPasswordError by remember { mutableStateOf(false) }
     var isPasswordConfirmError by remember { mutableStateOf(false) }
 
-    // Prywatne funkcje walidacji (nie trzeba ich trzymać w Activity, jeśli są używane tylko tutaj)
+    // Sprawdza, czy podany ciąg znaków jest poprawnym adresem e-mail.
     fun isEmailValid(email: String): Boolean = android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
+
+    // Sprawdza, czy hasło spełnia zdefiniowane kryteria bezpieczeństwa.
     fun isPasswordValid(password: String): Boolean {
         val lowercaseRegex = Regex("[a-z]")
         val uppercaseRegex = Regex("[A-Z]")
